@@ -5,7 +5,48 @@
 
 ```
 브라우저 ──▶ 프론트(Vite :5173) ──/api 프록시──▶ 백엔드(FastAPI :8000) ──▶ Ollama(:11434)
+                                                        └──▶ PostgreSQL + pgvector (Docker :5432)
 ```
+
+## 새 컴퓨터에서 처음 시작하기
+
+맥 기준입니다. 위에서부터 그대로 따라 하면 됩니다. 자세한 설명은 아래 각 섹션에 있습니다.
+
+```bash
+# 0. 도구 설치 (한 번만). Docker Desktop은 https://www.docker.com/products/docker-desktop 에서 받아 실행
+brew install uv ollama node
+
+# 1. 두 레포를 같은 폴더에 나란히 받기 (프론트 README가 ../llm-chatbot-backend 를 가리킴)
+git clone https://github.com/Hyesu-Choi/llm-chatbot-backend.git
+git clone https://github.com/Hyesu-Choi/llm-chatbot-frontend.git
+
+# 2. Ollama 켜고 모델 받기 (한 번만, 합쳐서 약 4.5GB)
+brew services run ollama
+ollama pull gemma3:4b          # 채팅
+ollama pull bge-m3             # 문서 검색(RAG)용 임베딩
+
+# 3. 백엔드 설정
+cd llm-chatbot-backend
+cp .env.example .env
+# .env를 열어 JWT_SECRET= 뒤에 아래 명령의 출력을 붙여 넣기 (비워 두면 서버가 안 뜸)
+openssl rand -hex 32
+
+# 4. 백엔드 설치 · DB · 실행
+uv sync                        # 파이썬 3.12 + 패키지 설치
+docker compose up -d           # PostgreSQL(pgvector) 켜기
+uv run alembic upgrade head    # 테이블 만들기
+uv run pytest -q               # (선택) 90개 통과하면 설치 끝
+uv run uvicorn app.main:app --reload --port 8000
+
+# 5. 프론트 (새 터미널)
+cd ../llm-chatbot-frontend
+npm install
+npm run dev                    # http://localhost:5173 → 회원가입부터
+```
+
+- DB는 컴퓨터마다 따로라서, 집에서는 **회원가입부터 다시** 하고 문서도 다시 올려야 합니다.
+- 공부를 마치면: `Ctrl+C`(백엔드 · 프론트), `brew services stop ollama`, `docker compose stop`
+- 이후로는 3~4번의 설치 단계 없이 `brew services run ollama` → `docker compose up -d` → 백엔드 · 프론트 실행만 하면 됩니다. `git pull`로 받은 뒤엔 `uv sync`, `uv run alembic upgrade head`, `npm install`을 한 번씩 해 주세요 (패키지 · 테이블이 바뀌었을 수 있음).
 
 ## 1. 사전 준비
 
