@@ -1,8 +1,9 @@
 """POST /api/chat — 대화 기록을 받아 LLM 답변을 스트리밍으로 돌려준다."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from app.auth import get_current_user
 from app.config import settings
 from app.llm import (
     LlmError,
@@ -13,7 +14,10 @@ from app.llm import (
 from app.schemas import ChatRequest
 
 # 라우터: 관련된 엔드포인트를 묶는 단위. main.py에서 app.include_router()로 앱에 붙인다.
-router = APIRouter()
+# dependencies: 이 라우터의 모든 엔드포인트가 실행 전에 거치는 의존성.
+# get_current_user가 로그인 안 된 요청을 401로 돌려보내서, 채팅은 로그인한 사용자만 쓸 수 있다.
+# (엔드포인트에서 사용자 정보가 필요해지면 그때 인자로 `user: CurrentUser`를 받으면 된다)
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 def _error(status_code: int, message: str) -> JSONResponse:

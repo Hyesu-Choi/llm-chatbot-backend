@@ -4,3 +4,4 @@ __pycache__/
 .env
 .idea/
 .ruff_cache/
+cookies.txt

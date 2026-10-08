@@ -6,6 +6,7 @@ pydantic-settings의 BaseSettings는 클래스 필드 이름을 대문자로 바
 그래서 `LLM_MODEL=exaone3.5:7.8b uv run uvicorn ...` 처럼 한 번만 바꿔 띄울 수도 있다.
 """
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +19,17 @@ class Settings(BaseSettings):
     llm_model: str = "gemma3:4b"
     # Ollama는 필요 없음. 키가 있는 OpenAI 호환 서비스로 바꿀 때만 넣는다.
     llm_api_key: str = ""
+    # SQLAlchemy 접속 주소. 형식: 방언+드라이버://사용자:비밀번호@호스트:포트/DB이름
+    # 기본값은 docker-compose.yml로 띄운 로컬 DB.
+    database_url: str = "postgresql+asyncpg://chatbot:chatbot@localhost:5432/chatbot"
+    # 로그인 토큰(JWT) 서명 키. 이 값을 아는 사람은 아무 사용자로나 로그인한 척할 수 있으니 절대 공개 금지.
+    # 기본값을 일부러 두지 않았다. .env에 없거나 너무 짧으면 서버가 아예 안 뜬다 (약한 키로 실수 배포 방지).
+    # 만들기: openssl rand -hex 32 (64자)
+    jwt_secret: str = Field(min_length=32)
+    # 로그인 유지 기간. 지나면 다시 로그인해야 한다.
+    jwt_expire_minutes: int = 60 * 24 * 7
+    # True면 HTTPS에서만 쿠키를 보낸다. 로컬은 http라 False, 배포(HTTPS)에서는 반드시 True.
+    cookie_secure: bool = False
     # 타입이 list[str]이라서 .env에는 JSON 배열 문자열로 적는다. pydantic이 알아서 파싱해 준다.
     cors_origins: list[str] = ["http://localhost:5173"]
     # 모든 대화 맨 앞에 붙는 지시문. 프론트는 보내지 않고 서버가 붙인다 (app/llm.py).
