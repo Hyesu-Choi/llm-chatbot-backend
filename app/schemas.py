@@ -141,3 +141,15 @@ class TitleRequest(BaseModel):
     """제목 요약에 쓸 첫 질문. 너무 긴 질문은 앞부분만 받아도 제목을 짓기에 충분하다."""
 
     question: str = Field(min_length=1, max_length=2000)
+
+
+# ── 문서 (RAG) ───────────────────────────────────────
+
+
+class DocumentResponse(BaseModel):
+    id: uuid.UUID
+    filename: str
+    # 글자 수와 조각 수. 화면에 "1,234자 · 5조각"처럼 보여준다.
+    char_count: int
+    chunk_count: int
+    created_at: datetime

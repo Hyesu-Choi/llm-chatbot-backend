@@ -8,6 +8,7 @@ Create Date: ${create_date}
 from typing import Sequence, Union
 
 from alembic import op
+import pgvector.sqlalchemy  # noqa: F401  벡터 컬럼이 있는 마이그레이션에서 필요
 import sqlalchemy as sa
 ${imports if imports else ""}
 

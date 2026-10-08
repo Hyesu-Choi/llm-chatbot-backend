@@ -12,11 +12,14 @@ pydantic 스키마(app/schemas.py)와 헷갈리지 않기:
 import uuid
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -32,6 +35,10 @@ EMAIL_MAX_LENGTH = 254
 CONVERSATION_TITLE_MAX_LENGTH = 100
 # assistant-ui가 만드는 메시지 id 길이 여유분
 CLIENT_MESSAGE_ID_MAX_LENGTH = 64
+DOCUMENT_FILENAME_MAX_LENGTH = 255
+# 임베딩 벡터의 숫자 개수. 임베딩 모델이 정한다 (bge-m3 = 1024).
+# 컬럼 타입에 박혀 들어가서, 다른 크기의 모델로 바꾸려면 마이그레이션으로 컬럼을 바꾸고 문서를 다시 임베딩해야 한다.
+EMBEDDING_DIMENSIONS = 1024
 
 
 class User(Base):
@@ -117,3 +124,53 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class Document(Base):
+    """사용자가 올린 문서 하나 (RAG의 원본)."""
+
+    __tablename__ = "documents"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    filename: Mapped[str] = mapped_column(String(DOCUMENT_FILENAME_MAX_LENGTH))
+    # 원문 전체. 텍스트 · 마크다운이라 DB에 바로 둔다 (PDF 같은 큰 원본 파일은 보통 S3에 두고 경로만 저장)
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DocumentChunk(Base):
+    """문서를 잘게 나눈 조각 하나 + 그 조각의 임베딩 벡터. 질문과 비슷한 조각을 찾는 검색 대상이다.
+
+    왜 문서를 통째로가 아니라 조각으로 저장하나?
+        1. 검색 정확도: 긴 문서 하나의 벡터는 여러 주제가 뭉개진 "평균"이 된다. 조각이 작을수록 한 가지 뜻을 담는다.
+        2. LLM 입력 길이: 찾은 조각 몇 개만 LLM에 넣으면 되니, 문서가 아무리 길어도 컨텍스트 창을 넘지 않는다.
+    """
+
+    __tablename__ = "document_chunks"
+    __table_args__ = (
+        # HNSW 인덱스: "가장 가까운 벡터 찾기"를 빠르게 해 주는 pgvector 전용 인덱스.
+        # 인덱스가 없으면 질문마다 모든 조각과 거리를 계산(전체 스캔)한다. 조각이 수천 개 이하면 그래도 빠르지만,
+        # 수십만 개가 되면 느려진다. HNSW는 정확도를 아주 조금 양보하고 훨씬 빠르게 찾는다(근사 최근접 이웃).
+        # vector_cosine_ops: 코사인 거리(<=>)로 검색할 때 쓰는 인덱스라는 뜻. 검색 쿼리와 거리 종류가 같아야 인덱스를 탄다.
+        Index(
+            "ix_document_chunks_embedding",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    # 문서 안에서 몇 번째 조각인지 (0부터). 출처를 "○○.md의 3번째 부분"처럼 보여줄 때 쓴다.
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    # Vector(1024): pgvector의 벡터 타입. 파이썬에선 숫자 리스트(list[float])로 다룬다.
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIMENSIONS))

@@ -71,7 +71,7 @@ AWS 요금과 프리 티어 조건은 계정 생성 시기에 따라 다르고 �
 
 ## 3순위: 한 단계 더
 
-- [ ] **RAG (내 문서로 답하기)**
+- [x] **RAG (내 문서로 답하기)**: .txt/.md, bge-m3 + pgvector. 다음: PDF 지원, 문서 고르기(특정 문서만 참고)
   - PDF나 노트를 넣으면 그 내용을 근거로 답변
   - 임베딩 모델(`ollama pull nomic-embed-text`) + 벡터 검색 (Postgres 확장 `pgvector`를 쓰면 DB를 따로 안 둬도 됨)
   - 공부: LLM 앱의 핵심 패턴. 공부 가치가 가장 큼

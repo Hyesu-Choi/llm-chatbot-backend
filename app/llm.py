@@ -79,6 +79,30 @@ async def list_installed_models() -> set[str]:
     return {model["id"] for model in response.json().get("data", [])}
 
 
+async def embed(texts: list[str]) -> list[list[float]]:
+    """문장들을 임베딩 벡터로 바꾼다 (POST /v1/embeddings, OpenAI 호환).
+
+    뜻이 비슷한 문장일수록 벡터가 비슷한 방향을 가리킨다. RAG는 이 성질로 "질문과 비슷한 문서 조각"을 찾는다.
+    여러 문장을 한 번에 보내면(배치) 하나씩 보낼 때보다 훨씬 빠르다.
+    """
+    payload = {"model": settings.embedding_model, "input": texts}
+    # 큰 문서는 조각이 많아 시간이 걸린다. 그래도 무한정은 기다리지 않는다.
+    async with httpx.AsyncClient(
+        base_url=settings.llm_base_url, headers=_auth_headers(), timeout=300
+    ) as client:
+        try:
+            response = await client.post("/embeddings", json=payload)
+        except httpx.ConnectError as exc:
+            raise LlmUnavailableError from exc
+    if response.status_code != 200:
+        _raise_for_status(
+            response.status_code, await _read_error(response), settings.embedding_model
+        )
+    # 응답: {"data": [{"index": 0, "embedding": [...]}, ...]}. index 순서대로 정렬해서 입력 순서와 맞춘다.
+    data = sorted(response.json()["data"], key=lambda item: item["index"])
+    return [item["embedding"] for item in data]
+
+
 async def complete_chat(messages: list[dict[str, str]], model: str) -> str:
     """스트리밍 없이 답변 전체를 한 번에 받는다. 짧은 내부용 요청(제목 요약 등)에 쓴다.
 

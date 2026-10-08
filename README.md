@@ -17,7 +17,8 @@
 | Docker Desktop | - | https://www.docker.com/products/docker-desktop (PostgreSQL 실행용) |
 
 ```bash
-ollama pull gemma3:4b   # 기본 모델, 약 3.3GB (최초 1회)
+ollama pull gemma3:4b   # 기본 채팅 모델, 약 3.3GB (최초 1회)
+ollama pull bge-m3      # RAG용 임베딩 모델, 약 1.2GB (문서 기능을 쓸 때만 필요)
 ```
 
 대화 내용은 내 컴퓨터 밖으로 나가지 않고, 키나 요청 한도도 없습니다.
@@ -46,6 +47,7 @@ curl localhost:11434            # "Ollama is running" 이 나오면 켜져 있�
 ### DB(PostgreSQL) 켜고 끄기
 
 로컬 DB는 Docker로 띄웁니다 (`docker-compose.yml`). Docker Desktop이 실행 중이어야 합니다.
+이미지는 벡터 검색 확장이 들어 있는 `pgvector/pgvector:pg17`(Postgres 17)입니다.
 
 ```bash
 docker compose up -d            # 켜기 (처음이면 이미지 받고 DB 생성)
@@ -147,7 +149,28 @@ uv run uvicorn app.main:app --reload --port 8000      # 개발용, 코드 바뀌
 
 프로덕션처럼 띄우려면 `--reload`를 빼고 필요하면 `--host 0.0.0.0`을 붙입니다.
 
-## 4. API
+## 4. RAG (내 문서로 답하기)
+
+사용자가 올린 문서에서 질문과 관련된 부분을 찾아 답변의 근거로 씁니다. 따로 켜는 스위치 없이, 문서가 있고 관련 있는 내용이 있을 때만 자동으로 참고합니다.
+
+```
+[올릴 때]  문서 → 조각내기(rag.split_text) → 조각마다 임베딩(bge-m3, 1024차원) → document_chunks에 저장
+[질문할 때] 질문 임베딩 → pgvector로 가장 비슷한 조각 찾기(rag.search_chunks) → 기준 통과한 조각만
+            → 시스템 프롬프트 뒤에 참고 자료로 붙이기(rag.build_context) → LLM 답변 + 출처 헤더
+```
+
+| 단계 | 정한 것 | 이유 |
+| --- | --- | --- |
+| 조각내기 | 마크다운 제목(`#`)마다 끊고, 섹션 안은 문단을 500자까지 합침. 긴 문단은 100자 겹치게 자름 | 주제가 섞인 조각은 벡터가 "평균"이 돼서 검색이 흐려짐. 제목만 있는 조각은 오탐을 내서 다음 섹션에 붙임 |
+| 임베딩 모델 | `bge-m3` | 한국어 질문 6개 비교: bge-m3 6/6, nomic-embed-text 1/6 |
+| 검색 | 코사인 거리(`<=>`) + HNSW 인덱스, 최대 4개 | 질문마다 모든 조각과 비교하지 않고 빠르게 찾음 |
+| 거르기 | 유사도 0.45 미만 버림 + 1등보다 0.1 넘게 낮으면 버림 | 측정: 관련 질문 1등 0.56~0.72, 무관한 질문 1등 0.34~0.42 |
+| 격리 | 검색할 때 `documents.user_id`로 JOIN해서 내 문서만 | 다른 사람 문서가 답변에 섞이면 안 됨 (테스트로 고정) |
+
+설정은 `.env`의 `EMBEDDING_MODEL`, `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP`, `RAG_TOP_K`, `RAG_MIN_SIMILARITY`, `RAG_RELATIVE_MARGIN`, `DOCUMENT_MAX_BYTES`로 바꿀 수 있습니다 (기본값은 `app/config.py`).
+임베딩 모델을 바꾸면 벡터 크기(`models.py`의 `EMBEDDING_DIMENSIONS`)와 저장된 벡터가 맞지 않으니, 마이그레이션 후 문서를 다시 올려야 합니다.
+
+## 5. API
 
 ### `GET /health`
 
@@ -215,9 +238,23 @@ Swagger UI(`/docs`)에서 시도해도 브라우저가 쿠키를 저장해서 `/
 {"default": "default", "personas": [{"id": "default", "name": "기본", "description": "무엇이든 친절하게 답해요"}, {"id": "english_teacher", "name": "영어 선생님", "description": "..."}]}
 ```
 
+### 문서 `/api/documents`
+
+**모두 로그인 필요.** 내 문서만 보이고, 남의 문서 id는 404.
+
+| 메서드 · 경로 | 본문 | 응답 |
+| --- | --- | --- |
+| `GET /api/documents` | - | 200 `[{"id", "filename", "char_count", "chunk_count", "created_at"}]` (최근 순) |
+| `POST /api/documents` | multipart `file` (.txt / .md, UTF-8, 최대 1MB) | 201 문서. 조각내기 · 임베딩까지 끝난 뒤 응답 |
+| `DELETE /api/documents/{id}` | - | 204 (조각도 함께 삭제) |
+
+```bash
+curl -b cookies.txt -F "file=@규정.md" localhost:8000/api/documents
+```
+
 ### `POST /api/chat`
 
-**로그인 필요** (쿠키 없으면 401).
+**로그인 필요** (쿠키 없으면 401). 내 문서 중 관련 조각이 있으면 근거로 쓰고, 응답 헤더 `X-RAG-Sources`에 출처를 담습니다 (URL 인코딩된 JSON: `[{"filename", "chunk", "similarity"}]`).
 
 - `model` (선택): 없으면 `LLM_MODEL`. 허용 목록에 없으면 400.
 - `persona` (선택): 역할 id. 없으면 `"default"`. 없는 id면 400. 프롬프트 문자열은 받지 않습니다.
@@ -261,7 +298,7 @@ curl -N -b cookies.txt localhost:8000/api/chat \
 
 스트리밍 도중 오류가 오면 본문에 `(LLM 오류: ...)` 텍스트가 섞여 내려옵니다.
 
-## 5. 코드 구조
+## 6. 코드 구조
 
 ```
 app/
@@ -273,11 +310,13 @@ app/
   auth.py          비밀번호 해시(argon2), JWT 발급 · 검증, 쿠키, 로그인 확인 의존성 CurrentUser
   llm.py           OpenAI 호환 API: 스트리밍 채팅, 한 번에 받기(제목 요약), 설치된 모델 목록, 긴 대화 자르기 (httpx)
   personas.py      역할 목록 (id · 이름 · 설명 · 시스템 프롬프트)
+  rag.py           RAG: 조각내기, pgvector 검색 · 거르기, 참고 자료 프롬프트 만들기
   routers/auth.py  /api/auth/signup · login · logout · me
   routers/chat.py  POST /api/chat, LLM 예외 → 503/502 JSON
   routers/conversations.py  대화 목록 CRUD, 메시지 불러오기 · 저장(upsert), LLM 제목 요약
   routers/models.py  GET /api/models (허용 목록 + 설치 여부)
   routers/personas.py  GET /api/personas
+  routers/documents.py  문서 올리기(조각 · 임베딩) · 목록 · 삭제
 migrations/        Alembic 마이그레이션 (env.py 설정, versions/ 변경 이력)
 tests/             pytest (아래 "테스트" 참고)
 docker-compose.yml 로컬 PostgreSQL
@@ -296,11 +335,17 @@ users ─1:N─▶ conversations ─1:N─▶ messages
                 created_at           role (user | assistant)
                 updated_at           content
                                      created_at
+users ─1:N─▶ documents ─1:N─▶ document_chunks
+                id (UUID)            id (UUID)
+                user_id (FK)         document_id (FK)
+                filename             chunk_index
+                content              content
+                created_at           embedding vector(1024)  ← HNSW 인덱스 (vector_cosine_ops)
 ```
 
-FK는 모두 `ON DELETE CASCADE`라서 사용자를 지우면 대화와 메시지가, 대화를 지우면 메시지가 함께 지워집니다.
+FK는 모두 `ON DELETE CASCADE`라서 사용자를 지우면 대화 · 메시지 · 문서 · 조각이, 대화나 문서를 지우면 딸린 메시지 · 조각이 함께 지워집니다.
 
-## 6. 개발
+## 7. 개발
 
 ```bash
 uv run ruff check app tests    # lint
@@ -312,7 +357,7 @@ uv add <패키지>                # 의존성 추가 (pyproject.toml + uv.lock �
 
 ```bash
 docker compose up -d           # DB가 켜져 있어야 함 (Ollama는 필요 없음)
-uv run pytest                  # 전체 (약 2초)
+uv run pytest                  # 전체 68개 (약 3초)
 uv run pytest -q tests/test_auth.py          # 파일 하나만
 uv run pytest -k other_users                 # 이름에 other_users가 들어간 테스트만
 uv run pytest -x                             # 첫 실패에서 멈춤
@@ -328,15 +373,17 @@ uv run pytest -x                             # 첫 실패에서 멈춤
 | `tests/test_auth.py` | 가입 · 로그인 · 로그아웃, 쿠키 옵션, 위조 · 만료 토큰 |
 | `tests/test_conversations.py` | 대화 CRUD, upsert, 가지, **다른 사용자 격리**, 제목 요약 · 실패 시 대체 |
 | `tests/test_chat.py` | 채팅 스트림, 모델 · 역할 검증, 긴 대화 자르기, LLM 오류 → 503/502, 모델 · 역할 목록 |
+| `tests/test_documents.py` | 문서 올리기 검증, **RAG 검색 · 거르기 · 다른 사용자 문서 격리**, 조각내기 단위 테스트 (임베딩만 가짜, pgvector 검색은 진짜) |
 | `tests/test_units.py` | `trim_history`, 제목 정리 함수 단위 테스트 |
 
-## 7. 문제 해결
+## 8. 문제 해결
 
 | 증상 | 원인 / 조치 |
 | --- | --- |
 | 503 `연결할 수 없습니다` | Ollama가 꺼져 있음. `brew services run ollama` 또는 `ollama serve` |
 | 502 `모델 ... 찾을 수 없습니다` | `ollama pull <모델>` 또는 `LLM_MODEL` 오타 확인 |
 | 첫 답변만 유독 느림 | 모델을 메모리에 올리는 중. 두 번째부터 빨라짐 |
+| 문서 올리기에서 `모델 "bge-m3"을 찾을 수 없습니다` | `ollama pull bge-m3` |
 | 답변에 다른 언어가 섞임 | 영어 중심 모델. `gemma3:4b`나 `exaone3.5:7.8b`로 변경 |
 | 프론트에서 CORS 오류 | 프론트는 Vite 프록시를 쓰므로 보통 안 남. 직접 호출 시 `CORS_ORIGINS`에 주소 추가 |
 | `docker compose up` 시 `Cannot connect to the Docker daemon` | Docker Desktop 실행 |
