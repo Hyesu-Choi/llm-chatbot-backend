@@ -5,7 +5,8 @@ from fastapi.responses import StreamingResponse
 
 from app.auth import get_current_user
 from app.config import settings
-from app.llm import stream_chat
+from app.llm import stream_chat, trim_history
+from app.personas import DEFAULT_PERSONA_ID, PERSONAS_BY_ID
 from app.schemas import ChatRequest
 
 # 라우터: 관련된 엔드포인트를 묶는 단위. main.py에서 app.include_router()로 앱에 붙인다.
@@ -26,11 +27,20 @@ async def chat(body: ChatRequest) -> StreamingResponse:
             status.HTTP_400_BAD_REQUEST, f'선택할 수 없는 모델입니다: "{model}"'
         )
 
+    persona = PERSONAS_BY_ID.get(body.persona or DEFAULT_PERSONA_ID)
+    if persona is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f'없는 역할입니다: "{body.persona}"'
+        )
+
+    # 긴 대화는 최근 메시지만 보낸다 (시스템 프롬프트가 잘려 나가지 않게, app/llm.py 참고)
+    messages = trim_history(body.messages, settings.llm_max_history_chars)
+
     # 여기서 LLM 서버에 연결하고 상태 코드까지 확인한다.
     # 연결·모델 오류는 스트림을 시작하기 *전에* 알아내야 제대로 된 HTTP 상태 코드로 응답할 수 있다.
     # (스트림이 한 번 시작되면 상태 코드 200은 이미 보내진 뒤라 바꿀 수 없다.)
     # 오류가 나면 예외가 그대로 올라가고, main.py의 LLM 예외 처리기가 503/502 응답으로 바꾼다.
-    chunks = await stream_chat(body.messages, model)
+    chunks = await stream_chat(messages, model, persona.prompt)
 
     # StreamingResponse는 비동기 제너레이터에서 조각이 나올 때마다 바로 클라이언트로 흘려보낸다.
     # 그래서 답변 전체가 완성되기 전부터 화면에 글자가 한 조각씩 나타난다.

@@ -100,7 +100,35 @@ async def complete_chat(messages: list[dict[str, str]], model: str) -> str:
     return response.json()["choices"][0]["message"]["content"] or ""
 
 
-async def stream_chat(messages: list[ChatMessage], model: str) -> AsyncIterator[str]:
+def trim_history(messages: list[ChatMessage], max_chars: int) -> list[ChatMessage]:
+    """긴 대화에서 최근 메시지만 남긴다 (글자 수 합이 max_chars를 넘지 않게).
+
+    왜 필요한가?
+        LLM은 대화를 기억하지 못해서 매번 대화 전체를 보낸다. 대화가 길어지면 모델의 컨텍스트 창을 넘는데,
+        Ollama는 넘친 만큼을 앞에서부터 조용히 잘라 버린다. 그러면 맨 앞의 시스템 프롬프트(언어 규칙, 역할)가
+        잘려 나가서 답변이 엉뚱해진다. 그래서 서버가 먼저 오래된 대화를 덜어내고, 시스템 프롬프트는 항상 지킨다.
+
+    정확히는 토큰 수로 재야 하지만, 모델마다 토크나이저가 달라서 여기선 글자 수로 어림한다.
+    가장 최근 메시지(지금 질문)는 아무리 길어도 항상 남긴다.
+    """
+    kept: list[ChatMessage] = []
+    total = 0
+    # 최근 메시지부터 거꾸로 담다가 한도를 넘으면 멈춘다
+    for message in reversed(messages):
+        total += len(message.content)
+        if kept and total > max_chars:
+            break
+        kept.append(message)
+    kept.reverse()
+    # 잘린 결과가 AI 답변으로 시작하면 "질문 없는 답변"이 돼서 모델이 헷갈리므로 앞의 답변을 버린다
+    while len(kept) > 1 and kept[0].role == "assistant":
+        kept.pop(0)
+    return kept
+
+
+async def stream_chat(
+    messages: list[ChatMessage], model: str, system_prompt: str
+) -> AsyncIterator[str]:
     """LLM에 요청을 보내고, 텍스트 조각을 내보내는 비동기 이터레이터를 돌려준다.
 
     두 단계로 나눈 이유: 이 함수 자체는 연결과 상태 코드 확인까지만 하고 바로 반환한다.
@@ -112,7 +140,7 @@ async def stream_chat(messages: list[ChatMessage], model: str) -> AsyncIterator[
         "stream": True,  # 답변을 다 만든 뒤가 아니라 토큰이 생길 때마다 보내 달라는 뜻
         "messages": [
             # LLM은 대화를 기억하지 않는다. 매 요청마다 시스템 프롬프트 + 지금까지의 대화 전체를 보낸다.
-            {"role": "system", "content": settings.system_prompt},
+            {"role": "system", "content": system_prompt},
             *[message.model_dump() for message in messages],  # pydantic 모델 → dict
         ],
     }

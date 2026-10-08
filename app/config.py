@@ -37,7 +37,11 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     # 타입이 list[str]이라서 .env에는 JSON 배열 문자열로 적는다. pydantic이 알아서 파싱해 준다.
     cors_origins: list[str] = ["http://localhost:5173"]
-    # 모든 대화 맨 앞에 붙는 지시문. 프론트는 보내지 않고 서버가 붙인다 (app/llm.py).
+    # LLM에 보낼 대화 기록의 최대 글자 수. 넘으면 오래된 메시지부터 뺀다 (app/llm.py의 trim_history).
+    # 모델은 한 번에 읽을 수 있는 길이(컨텍스트 창)가 정해져 있다. Ollama는 기본 4096토큰이고,
+    # 한국어는 대략 1~2글자에 1토큰이라 6000자면 시스템 프롬프트 · 답변 자리까지 남는다.
+    llm_max_history_chars: int = 6000
+    # 기본 역할(app/personas.py의 "기본")의 지시문. 프론트는 보내지 않고 서버가 붙인다 (app/llm.py).
     system_prompt: str = (
         "당신은 친절하고 간결한 한국어 어시스턴트입니다. "
         "반드시 사용자가 질문한 언어로 답하세요. 한국어로 물으면 처음부터 끝까지 한국어로만 답합니다. "

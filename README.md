@@ -94,12 +94,13 @@ cp .env.example .env
 | `LLM_MODELS` | `["exaone3.5:7.8b"]` | 화면에서 고를 수 있는 모델 (기본 모델 자동 포함). 목록에 없는 모델은 400 |
 | `LLM_API_KEY` | (없음) | Ollama는 필요 없음. 키가 있는 서비스로 바꿀 때만 |
 | `CORS_ORIGINS` | `["http://localhost:5173"]` | JSON 배열. 프론트 주소 |
+| `LLM_MAX_HISTORY_CHARS` | `6000` | LLM에 보낼 대화 기록 최대 글자 수. 넘으면 오래된 메시지부터 뺌 |
 | `DATABASE_URL` | `postgresql+asyncpg://chatbot:chatbot@localhost:5432/chatbot` | DB 접속 주소. `+asyncpg`는 비동기 드라이버 |
 | `JWT_SECRET` | (없음, **필수**) | 로그인 토큰 서명 키. 32자 이상. `openssl rand -hex 32`로 생성. 없으면 서버가 안 뜸 |
 | `JWT_EXPIRE_MINUTES` | `10080` (7일) | 로그인 유지 기간 |
 | `COOKIE_SECURE` | `false` | 배포(HTTPS)에서는 반드시 `true` |
 
-시스템 프롬프트는 `app/config.py`의 `system_prompt`에서 바꿉니다.
+역할(시스템 프롬프트)은 `app/personas.py`에서 바꾸거나 추가합니다. "기본" 역할은 `app/config.py`의 `system_prompt`를 씁니다.
 `.env`는 `--reload`로도 다시 읽히지 않으니, 바꾼 뒤에는 서버를 재시작하세요.
 
 `.env.example`을 복사한 경우 `JWT_SECRET`이 비어 있으니 직접 채워야 합니다.
@@ -206,9 +207,21 @@ Swagger UI(`/docs`)에서 시도해도 브라우저가 쿠키를 저장해서 `/
 {"default": "gemma3:4b", "models": [{"id": "gemma3:4b", "installed": true}, {"id": "exaone3.5:7.8b", "installed": false}]}
 ```
 
+### `GET /api/personas`
+
+**로그인 필요.** 역할 드롭다운에 보여줄 목록 (`app/personas.py`). 프롬프트 내용은 내보내지 않습니다.
+
+```json
+{"default": "default", "personas": [{"id": "default", "name": "기본", "description": "무엇이든 친절하게 답해요"}, {"id": "english_teacher", "name": "영어 선생님", "description": "..."}]}
+```
+
 ### `POST /api/chat`
 
-**로그인 필요** (쿠키 없으면 401). 본문의 `model`은 선택이고, 없으면 `LLM_MODEL`을 씁니다. 허용 목록에 없는 모델이면 400. `messages`는 1개 이상, role은 `user` 또는 `assistant`만 받습니다.
+**로그인 필요** (쿠키 없으면 401).
+
+- `model` (선택): 없으면 `LLM_MODEL`. 허용 목록에 없으면 400.
+- `persona` (선택): 역할 id. 없으면 `"default"`. 없는 id면 400. 프롬프트 문자열은 받지 않습니다.
+- 대화가 `LLM_MAX_HISTORY_CHARS`를 넘으면 최근 메시지만 보냅니다 (시스템 프롬프트가 잘려 나가지 않게). `messages`는 1개 이상, role은 `user` 또는 `assistant`만 받습니다.
 시스템 프롬프트는 서버에서 붙이므로 보내지 않습니다.
 
 ```json
@@ -218,7 +231,8 @@ Swagger UI(`/docs`)에서 시도해도 브라우저가 쿠키를 저장해서 `/
     {"role": "assistant", "content": "안녕하세요!"},
     {"role": "user", "content": "오늘 뭐 하지?"}
   ],
-  "model": "gemma3:4b"
+  "model": "gemma3:4b",
+  "persona": "default"
 }
 ```
 
@@ -236,7 +250,7 @@ curl -N -b cookies.txt localhost:8000/api/chat \
 | --- | --- | --- |
 | 요청 형식 오류 (빈 messages, 짧은 비밀번호 등) | 422 | `{"error": "비밀번호는 8자 이상 128자 이하로 입력해 주세요."}` 등 |
 | 로그인 필요 · 로그인 실패 | 401 | `{"error": "로그인이 필요합니다."}` 등 |
-| 허용 안 된 모델 | 400 | `{"error": "선택할 수 없는 모델입니다: \"...\""}` |
+| 허용 안 된 모델 · 없는 역할 | 400 | `{"error": "선택할 수 없는 모델입니다: \"...\""}` |
 | 이미 가입된 이메일 | 409 | `{"error": "이미 가입된 이메일입니다."}` |
 | 없는 대화 · 남의 대화 | 404 | `{"error": "대화를 찾을 수 없습니다."}` |
 | Ollama 연결 실패 | 503 | `{"error": "LLM 서버(...)에 연결할 수 없습니다. ..."}` |
@@ -257,11 +271,13 @@ app/
   models.py        DB 테이블 (SQLAlchemy ORM): User, Conversation, Message
   schemas.py       API 요청 · 응답 모양 (pydantic): 채팅, 인증, 대화 · 메시지
   auth.py          비밀번호 해시(argon2), JWT 발급 · 검증, 쿠키, 로그인 확인 의존성 CurrentUser
-  llm.py           OpenAI 호환 API: 스트리밍 채팅, 한 번에 받기(제목 요약), 설치된 모델 목록 (httpx)
+  llm.py           OpenAI 호환 API: 스트리밍 채팅, 한 번에 받기(제목 요약), 설치된 모델 목록, 긴 대화 자르기 (httpx)
+  personas.py      역할 목록 (id · 이름 · 설명 · 시스템 프롬프트)
   routers/auth.py  /api/auth/signup · login · logout · me
   routers/chat.py  POST /api/chat, LLM 예외 → 503/502 JSON
   routers/conversations.py  대화 목록 CRUD, 메시지 불러오기 · 저장(upsert), LLM 제목 요약
   routers/models.py  GET /api/models (허용 목록 + 설치 여부)
+  routers/personas.py  GET /api/personas
 migrations/        Alembic 마이그레이션 (env.py 설정, versions/ 변경 이력)
 docker-compose.yml 로컬 PostgreSQL
 ```

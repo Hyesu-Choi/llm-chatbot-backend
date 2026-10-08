@@ -15,7 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.config import settings
 from app.db import engine
 from app.llm import LlmError, LlmModelMissingError, LlmUnavailableError
-from app.routers import auth, chat, conversations, models
+from app.routers import auth, chat, conversations, models, personas
 
 
 # lifespan: 서버가 켜질 때(yield 앞)와 꺼질 때(yield 뒤) 한 번씩 실행할 코드.
@@ -45,6 +45,7 @@ app.include_router(chat.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(conversations.router, prefix="/api")
 app.include_router(models.router, prefix="/api")
+app.include_router(personas.router, prefix="/api")
 
 
 # HTTPException을 던지면 FastAPI 기본은 {"detail": "..."} 로 응답한다.

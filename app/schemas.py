@@ -30,6 +30,8 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1)
     # 안 보내면 서버 기본 모델(settings.llm_model). 보내면 허용 목록에 있어야 한다 (routers/chat.py).
     model: str | None = None
+    # 역할 id (app/personas.py). 안 보내면 "default". 프롬프트 문자열이 아니라 id만 받는다.
+    persona: str | None = None
 
 
 class ModelOption(BaseModel):
@@ -41,6 +43,18 @@ class ModelOption(BaseModel):
 class ModelsResponse(BaseModel):
     default: str
     models: list[ModelOption]
+
+
+class PersonaOption(BaseModel):
+    # 프롬프트 내용은 내보내지 않는다. 화면엔 이름과 설명만 있으면 된다.
+    id: str
+    name: str
+    description: str
+
+
+class PersonasResponse(BaseModel):
+    default: str
+    personas: list[PersonaOption]
 
 
 # ── 인증 ──────────────────────────────────────────────
