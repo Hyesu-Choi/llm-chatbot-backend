@@ -2,13 +2,10 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app.config import settings
-from app.nvidia import (
-    NvidiaApiKeyMissingError,
-    NvidiaAuthError,
-    NvidiaError,
-    NvidiaModelMissingError,
-    NvidiaRateLimitError,
-    NvidiaUnavailableError,
+from app.llm import (
+    LlmError,
+    LlmModelMissingError,
+    LlmUnavailableError,
     stream_chat,
 )
 from app.schemas import ChatRequest
@@ -24,30 +21,19 @@ def _error(status_code: int, message: str) -> JSONResponse:
 async def chat(body: ChatRequest) -> Response:
     try:
         chunks = await stream_chat(body.messages)
-    except NvidiaApiKeyMissingError:
+    except LlmUnavailableError:
         return _error(
             503,
-            "NVIDIA_API_KEY가 설정되지 않았습니다. "
-            "build.nvidia.com 에서 키를 발급받아 .env에 넣어주세요.",
+            f"LLM 서버({settings.llm_base_url})에 연결할 수 없습니다. "
+            "Ollama가 실행 중인지 확인하세요 (ollama serve).",
         )
-    except NvidiaUnavailableError:
-        return _error(503, "NVIDIA API에 연결할 수 없습니다. 인터넷 연결을 확인하세요.")
-    except NvidiaAuthError:
+    except LlmModelMissingError:
         return _error(
             502,
-            "NVIDIA API 키가 올바르지 않습니다. .env의 NVIDIA_API_KEY를 확인하세요.",
+            f'모델 "{settings.llm_model}"을 찾을 수 없습니다. '
+            f"ollama pull {settings.llm_model} 으로 받아주세요.",
         )
-    except NvidiaRateLimitError:
-        return _error(
-            429, "NVIDIA API 요청 한도를 넘었습니다. 잠시 후 다시 시도하세요."
-        )
-    except NvidiaModelMissingError:
-        return _error(
-            502,
-            f'모델 "{settings.nvidia_model}"을 찾을 수 없습니다. '
-            "build.nvidia.com 에서 모델 ID를 확인하세요.",
-        )
-    except NvidiaError as exc:
+    except LlmError as exc:
         return _error(502, exc.detail)
 
     return StreamingResponse(chunks, media_type="text/plain; charset=utf-8")
