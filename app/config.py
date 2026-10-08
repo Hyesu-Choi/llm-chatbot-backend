@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # 업로드 최대 크기 (바이트). 1MB면 한글 약 30만 자.
     document_max_bytes: int = 1_000_000
 
+    # 도구 호출(날씨 · 시각 · 계산기, app/tools.py). 끄면 질문마다 하는 도구 판단(약 1초)을 건너뛴다.
+    tools_enabled: bool = True
+
     # LLM에 보낼 대화 기록의 최대 글자 수. 넘으면 오래된 메시지부터 뺀다 (app/llm.py의 trim_history).
     # 모델은 한 번에 읽을 수 있는 길이(컨텍스트 창)가 정해져 있다. Ollama는 기본 4096토큰이고,
     # 한국어는 대략 1~2글자에 1토큰이라 6000자면 시스템 프롬프트 · 답변 자리까지 남는다.

@@ -75,7 +75,7 @@ AWS 요금과 프리 티어 조건은 계정 생성 시기에 따라 다르고 �
   - PDF나 노트를 넣으면 그 내용을 근거로 답변
   - 임베딩 모델(`ollama pull nomic-embed-text`) + 벡터 검색 (Postgres 확장 `pgvector`를 쓰면 DB를 따로 안 둬도 됨)
   - 공부: LLM 앱의 핵심 패턴. 공부 가치가 가장 큼
-- [ ] **도구 호출 (tool calling)**
+- [x] **도구 호출 (tool calling)**: 날씨 · 현재 시각 · 계산기. gemma3 JSON 판단(프롬프트 기반). 다음: 이전 대화 맥락으로 판단하기("거기는?" 같은 후속 질문)
   - "서울 날씨 알려줘" → LLM이 날씨 API 함수를 직접 호출
   - 공부: 에이전트의 기본 원리
 - [x] **백엔드 테스트 (pytest)**: 51개, 약 2초. `uv run pytest`

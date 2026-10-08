@@ -1,6 +1,7 @@
 """POST /api/chat — 대화 기록을 받아 LLM 답변을 스트리밍으로 돌려준다.
 
 사용자가 올린 문서가 있으면 질문과 관련된 조각을 찾아 근거로 붙인다 (RAG, app/rag.py).
+실시간 정보나 계산이 필요한 질문이면 도구를 실행해 그 결과를 붙인다 (도구 호출, app/tools.py).
 """
 
 import json
@@ -20,6 +21,7 @@ from app.models import Document, User
 from app.personas import DEFAULT_PERSONA_ID, PERSONAS_BY_ID
 from app.rag import SearchHit, build_context, search_chunks
 from app.schemas import ChatRequest
+from app.tools import ToolResult, build_tool_context, choose_tool, run_tool
 
 # 라우터: 관련된 엔드포인트를 묶는 단위. main.py에서 app.include_router()로 앱에 붙인다.
 # dependencies: 이 라우터의 모든 엔드포인트가 실행 전에 거치는 의존성.
@@ -30,6 +32,8 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # RAG로 참고한 문서 목록을 담아 보내는 응답 헤더 이름.
 # 본문은 순수 텍스트 스트림이라 끼워 넣을 자리가 없어서, 스트림 시작 전에 나가는 헤더에 싣는다.
 SOURCES_HEADER = "X-RAG-Sources"
+# 실행한 도구를 담아 보내는 응답 헤더. 화면에 "🔧 날씨 조회 · 서울"처럼 보여준다.
+TOOLS_HEADER = "X-Tool-Calls"
 
 
 async def _find_relevant_chunks(
@@ -48,6 +52,19 @@ async def _find_relevant_chunks(
         settings.rag_min_similarity,
         settings.rag_relative_margin,
     )
+
+
+async def _use_tool(question: str) -> ToolResult | None:
+    if not settings.tools_enabled:
+        return None
+    call = await choose_tool(question)
+    return await run_tool(call) if call else None
+
+
+def _tools_header(result: ToolResult) -> str:
+    tool_call = {"name": result.call.tool.name, "label": result.call.tool.label}
+    tool_call |= {"args": result.call.args, "ok": result.ok}
+    return quote(json.dumps([tool_call], ensure_ascii=False))
 
 
 def _sources_header(hits: list[SearchHit]) -> str:
@@ -88,10 +105,25 @@ async def chat(
     # 긴 대화는 최근 메시지만 보낸다 (시스템 프롬프트가 잘려 나가지 않게, app/llm.py 참고)
     messages = trim_history(body.messages, settings.llm_max_history_chars)
 
-    # RAG: 마지막 질문과 비슷한 내 문서 조각을 찾아 시스템 프롬프트 뒤에 참고 자료로 붙인다
+    question = messages[-1].content
     system_prompt = persona.prompt
     headers: dict[str, str] = {}
-    hits = await _find_relevant_chunks(db, user, messages[-1].content)
+
+    # 도구 호출: 실시간 정보 · 계산이 필요하면 도구를 실행하고, 결과를 "마지막 질문 바로 뒤"에 붙인다.
+    # 처음엔 RAG처럼 시스템 프롬프트 끝에 붙였는데, 작은 모델이 결과를 무시하고 지어냈다
+    # (2,720,000원이라는 계산 결과를 주고도 "240만원"이라고 답함). 질문 바로 뒤에 두니 그대로 썼다.
+    # 정식 도구 호출 기능에서도 도구 결과는 대화의 마지막 메시지(role="tool")로 들어간다.
+    tool_result = await _use_tool(question)
+    if tool_result:
+        last = messages[-1]
+        # model_copy(update=...): pydantic 객체를 고치지 않고, 일부 값만 바꾼 새 객체를 만든다
+        messages[-1] = last.model_copy(
+            update={"content": last.content + build_tool_context(tool_result)}
+        )
+        headers[TOOLS_HEADER] = _tools_header(tool_result)
+
+    # RAG: 마지막 질문과 비슷한 내 문서 조각을 찾아 시스템 프롬프트 뒤에 참고 자료로 붙인다
+    hits = await _find_relevant_chunks(db, user, question)
     if hits:
         system_prompt += build_context(hits)
         headers[SOURCES_HEADER] = _sources_header(hits)

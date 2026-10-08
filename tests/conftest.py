@@ -24,6 +24,8 @@ os.environ["DATABASE_URL"] = TEST_DSN.replace("postgresql://", "postgresql+async
 os.environ["JWT_SECRET"] = "test-secret-" + "x" * 40
 # 테스트는 실제 LLM을 부르지 않지만, 혹시 mock을 빠뜨리면 바로 연결 오류가 나서 알아챌 수 있게 없는 주소로
 os.environ["LLM_BASE_URL"] = "http://localhost:1/v1"
+# 도구 판단(질문마다 LLM 호출)은 기본으로 끄고, 도구 테스트(test_tools.py)에서만 켠다
+os.environ["TOOLS_ENABLED"] = "false"
 
 # 아래 import들이 파일 중간에 있는 이유: 위에서 환경 변수를 먼저 설정한 뒤에 app을 불러와야 해서
 import asyncpg
@@ -87,3 +89,13 @@ def client(_session_client: TestClient) -> TestClient:
     asyncio.run(_truncate_all_tables())
     _session_client.cookies.clear()
     return _session_client
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    """async def 테스트를 돌릴 이벤트 루프 종류.
+
+    pytest는 원래 async 테스트를 실행하지 못한다. FastAPI가 이미 쓰는 anyio 라이브러리에 pytest 플러그인이
+    들어 있어서, 테스트 파일에 `pytestmark = pytest.mark.anyio`를 달면 async 테스트도 돌릴 수 있다.
+    """
+    return "asyncio"

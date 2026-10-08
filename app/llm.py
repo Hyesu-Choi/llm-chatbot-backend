@@ -103,14 +103,26 @@ async def embed(texts: list[str]) -> list[list[float]]:
     return [item["embedding"] for item in data]
 
 
-async def complete_chat(messages: list[dict[str, str]], model: str) -> str:
+async def complete_chat(
+    messages: list[dict[str, str]],
+    model: str,
+    *,
+    json_mode: bool = False,
+    temperature: float | None = None,
+) -> str:
     """스트리밍 없이 답변 전체를 한 번에 받는다. 짧은 내부용 요청(제목 요약 등)에 쓴다.
 
     "stream": False 면 SSE 대신 JSON 하나가 온다:
         {"choices": [{"message": {"role": "assistant", "content": "답변 전체"}}]}
     사용자가 화면에서 기다리는 답변이 아니라서 조각조각 보여줄 필요가 없다.
     """
-    payload = {"model": model, "stream": False, "messages": messages}
+    payload: dict[str, object] = {"model": model, "stream": False, "messages": messages}
+    if json_mode:
+        # OpenAI 형식의 "JSON 모드". 모델이 문법에 맞는 JSON만 출력하도록 강제한다 (도구 판단에 사용)
+        payload["response_format"] = {"type": "json_object"}
+    if temperature is not None:
+        # 0이면 매번 가장 확률 높은 답만 고른다 (같은 질문 → 같은 판단)
+        payload["temperature"] = temperature
     # 무한정 기다리지 않도록 시간 제한을 둔다 (제목 하나에 60초 넘게 걸리면 포기)
     async with httpx.AsyncClient(
         base_url=settings.llm_base_url, headers=_auth_headers(), timeout=60

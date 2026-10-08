@@ -38,7 +38,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
     # 다른 출처에서 호출할 때 브라우저 JS가 읽을 수 있게 허용할 응답 헤더 (기본으론 몇 개 빼고 숨겨진다)
-    expose_headers=["X-RAG-Sources"],
+    expose_headers=["X-RAG-Sources", "X-Tool-Calls"],
 )
 
 # routers/chat.py의 "/chat" 경로에 "/api"를 붙여서 최종 주소는 POST /api/chat 이 된다.

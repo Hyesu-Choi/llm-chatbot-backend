@@ -96,6 +96,7 @@ cp .env.example .env
 | `LLM_MODELS` | `["exaone3.5:7.8b"]` | 화면에서 고를 수 있는 모델 (기본 모델 자동 포함). 목록에 없는 모델은 400 |
 | `LLM_API_KEY` | (없음) | Ollama는 필요 없음. 키가 있는 서비스로 바꿀 때만 |
 | `CORS_ORIGINS` | `["http://localhost:5173"]` | JSON 배열. 프론트 주소 |
+| `TOOLS_ENABLED` | `true` | 도구 호출(날씨 · 시각 · 계산기). 끄면 질문마다 드는 판단(약 1초) 생략 |
 | `LLM_MAX_HISTORY_CHARS` | `6000` | LLM에 보낼 대화 기록 최대 글자 수. 넘으면 오래된 메시지부터 뺌 |
 | `DATABASE_URL` | `postgresql+asyncpg://chatbot:chatbot@localhost:5432/chatbot` | DB 접속 주소. `+asyncpg`는 비동기 드라이버 |
 | `JWT_SECRET` | (없음, **필수**) | 로그인 토큰 서명 키. 32자 이상. `openssl rand -hex 32`로 생성. 없으면 서버가 안 뜸 |
@@ -170,7 +171,41 @@ uv run uvicorn app.main:app --reload --port 8000      # 개발용, 코드 바뀌
 설정은 `.env`의 `EMBEDDING_MODEL`, `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP`, `RAG_TOP_K`, `RAG_MIN_SIMILARITY`, `RAG_RELATIVE_MARGIN`, `DOCUMENT_MAX_BYTES`로 바꿀 수 있습니다 (기본값은 `app/config.py`).
 임베딩 모델을 바꾸면 벡터 크기(`models.py`의 `EMBEDDING_DIMENSIONS`)와 저장된 벡터가 맞지 않으니, 마이그레이션 후 문서를 다시 올려야 합니다.
 
-## 5. API
+## 5. 도구 호출 (날씨 · 현재 시각 · 계산기)
+
+LLM이 혼자 알 수 없는 "지금"의 정보나 정확한 계산이 필요한 질문이면, 서버 함수를 실행해 그 결과를 근거로 답합니다 (`app/tools.py`).
+
+```
+질문 → [판단] gemma3에게 JSON으로 "도구가 필요해? 어떤 걸 어떤 인자로?" (약 1초)
+     → [실행] 서버가 함수 실행 (날씨는 Open-Meteo 무료 API, 키 없음)
+     → [답변] 결과를 질문 바로 뒤에 붙여 LLM이 평소처럼 스트리밍으로 답함 + 응답 헤더 X-Tool-Calls
+```
+
+| 도구 | 하는 일 | 예 |
+| --- | --- | --- |
+| `get_weather` | 도시의 현재 날씨 | "서울 날씨 어때?", "대전인데 우산 챙겨야 해?" |
+| `get_current_time` | 지금 날짜 · 요일 · 시각 (한국 시간) | "지금 몇 시야?", "오늘 무슨 요일?" |
+| `calculate` | 사칙연산 · 거듭제곱 | "320만원에서 15% 떼면?" |
+
+**정식 tools 기능 대신 프롬프트 기반으로 만든 이유** (측정)
+
+| 방식 | 판단 정확도 | 속도 | 문제 |
+| --- | --- | --- | --- |
+| gemma3 + 정식 `tools` | - | - | gemma3는 지원 안 함 |
+| qwen3:4b + 정식 `tools` (생각 모드) | 11/11 | 질문당 12~15초 | 너무 느림. 생각 모드를 끄면 영어 생각이 본문에 섞임 |
+| **gemma3 + JSON 판단 프롬프트 (예시 포함)** | **16/17** | **약 1초** | 예시 없을 땐 8/11 ("시간 관리 잘하는 법"에 시계 도구) |
+
+**만들면서 고친 것들**
+
+- 계산기는 `eval`을 쓰지 않고 AST로 숫자 · 연산자만 계산 (`eval`은 코드 실행 취약점). 너무 큰 지수도 거부
+- 판단이 틀려 계산기에 `log(n)`이 오면 `ToolNotApplicable` → 도구 없이 평소처럼 답함
+- 한글 도시 검색이 엉뚱한 동네를 찾아서(대전 → 전남의 작은 마을), 영어 · 한글 이름 둘 다 찾아 인구 최다 도시 선택. 찾은 좌표는 메모리 캐시 (2.2초 → 0.9초)
+- 도구 결과를 시스템 프롬프트 끝에 두면 작은 모델이 무시함(2,720,000원 → "240만원") → 질문 바로 뒤로 옮김
+- 화면용 "🔧 …", "📎 참고한 문서" 줄이 대화 기록에 섞여 모델이 따라 함 → 프론트가 보낼 때 떼어 냄
+
+`.env`의 `TOOLS_ENABLED=false`로 끌 수 있습니다 (질문마다 드는 판단 1초가 없어짐).
+
+## 6. API
 
 ### `GET /health`
 
@@ -254,7 +289,7 @@ curl -b cookies.txt -F "file=@규정.md" localhost:8000/api/documents
 
 ### `POST /api/chat`
 
-**로그인 필요** (쿠키 없으면 401). 내 문서 중 관련 조각이 있으면 근거로 쓰고, 응답 헤더 `X-RAG-Sources`에 출처를 담습니다 (URL 인코딩된 JSON: `[{"filename", "chunk", "similarity"}]`).
+**로그인 필요** (쿠키 없으면 401). 도구를 썼으면 응답 헤더 `X-Tool-Calls`에 담습니다 (URL 인코딩된 JSON: `[{"name", "label", "args", "ok"}]`). 내 문서 중 관련 조각이 있으면 근거로 쓰고, 응답 헤더 `X-RAG-Sources`에 출처를 담습니다 (URL 인코딩된 JSON: `[{"filename", "chunk", "similarity"}]`).
 
 - `model` (선택): 없으면 `LLM_MODEL`. 허용 목록에 없으면 400.
 - `persona` (선택): 역할 id. 없으면 `"default"`. 없는 id면 400. 프롬프트 문자열은 받지 않습니다.
@@ -298,7 +333,7 @@ curl -N -b cookies.txt localhost:8000/api/chat \
 
 스트리밍 도중 오류가 오면 본문에 `(LLM 오류: ...)` 텍스트가 섞여 내려옵니다.
 
-## 6. 코드 구조
+## 7. 코드 구조
 
 ```
 app/
@@ -311,6 +346,7 @@ app/
   llm.py           OpenAI 호환 API: 스트리밍 채팅, 한 번에 받기(제목 요약), 설치된 모델 목록, 긴 대화 자르기 (httpx)
   personas.py      역할 목록 (id · 이름 · 설명 · 시스템 프롬프트)
   rag.py           RAG: 조각내기, pgvector 검색 · 거르기, 참고 자료 프롬프트 만들기
+  tools.py         도구 호출: 도구 목록, JSON 판단(choose_tool), 실행(run_tool), 안전한 계산기, 날씨 API
   routers/auth.py  /api/auth/signup · login · logout · me
   routers/chat.py  POST /api/chat, LLM 예외 → 503/502 JSON
   routers/conversations.py  대화 목록 CRUD, 메시지 불러오기 · 저장(upsert), LLM 제목 요약
@@ -345,7 +381,7 @@ users ─1:N─▶ documents ─1:N─▶ document_chunks
 
 FK는 모두 `ON DELETE CASCADE`라서 사용자를 지우면 대화 · 메시지 · 문서 · 조각이, 대화나 문서를 지우면 딸린 메시지 · 조각이 함께 지워집니다.
 
-## 7. 개발
+## 8. 개발
 
 ```bash
 uv run ruff check app tests    # lint
@@ -357,7 +393,7 @@ uv add <패키지>                # 의존성 추가 (pyproject.toml + uv.lock �
 
 ```bash
 docker compose up -d           # DB가 켜져 있어야 함 (Ollama는 필요 없음)
-uv run pytest                  # 전체 68개 (약 3초)
+uv run pytest                  # 전체 90개 (약 3초)
 uv run pytest -q tests/test_auth.py          # 파일 하나만
 uv run pytest -k other_users                 # 이름에 other_users가 들어간 테스트만
 uv run pytest -x                             # 첫 실패에서 멈춤
@@ -374,9 +410,10 @@ uv run pytest -x                             # 첫 실패에서 멈춤
 | `tests/test_conversations.py` | 대화 CRUD, upsert, 가지, **다른 사용자 격리**, 제목 요약 · 실패 시 대체 |
 | `tests/test_chat.py` | 채팅 스트림, 모델 · 역할 검증, 긴 대화 자르기, LLM 오류 → 503/502, 모델 · 역할 목록 |
 | `tests/test_documents.py` | 문서 올리기 검증, **RAG 검색 · 거르기 · 다른 사용자 문서 격리**, 조각내기 단위 테스트 (임베딩만 가짜, pgvector 검색은 진짜) |
+| `tests/test_tools.py` | 계산기 보안(코드 실행 · 큰 지수 거부), 도구 판단 출력 검증, 날씨(가짜 HTTP · 캐시), 채팅 연결 |
 | `tests/test_units.py` | `trim_history`, 제목 정리 함수 단위 테스트 |
 
-## 8. 문제 해결
+## 9. 문제 해결
 
 | 증상 | 원인 / 조치 |
 | --- | --- |
