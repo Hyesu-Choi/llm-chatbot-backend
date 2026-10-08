@@ -21,8 +21,16 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "pytest>=9.1.1",
     "ruff>=0.8",
 ]
 
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 프로젝트 루트를 import 경로에 넣어서 테스트에서 `from app...`, `from tests.helpers ...`를 쓸 수 있게
+pythonpath = ["."]
+# FastAPI TestClient 내부의 라이브러리 경고. 우리 코드 문제가 아니라서 출력에서만 숨긴다
+filterwarnings = ["ignore:Using .httpx. with .starlette.testclient. is deprecated"]

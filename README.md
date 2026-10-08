@@ -279,6 +279,7 @@ app/
   routers/models.py  GET /api/models (허용 목록 + 설치 여부)
   routers/personas.py  GET /api/personas
 migrations/        Alembic 마이그레이션 (env.py 설정, versions/ 변경 이력)
+tests/             pytest (아래 "테스트" 참고)
 docker-compose.yml 로컬 PostgreSQL
 ```
 
@@ -302,10 +303,32 @@ FK는 모두 `ON DELETE CASCADE`라서 사용자를 지우면 대화와 메시�
 ## 6. 개발
 
 ```bash
-uv run ruff check app          # lint
-uv run ruff format app         # 포맷
+uv run ruff check app tests    # lint
+uv run ruff format app tests   # 포맷
 uv add <패키지>                # 의존성 추가 (pyproject.toml + uv.lock 갱신)
 ```
+
+### 테스트
+
+```bash
+docker compose up -d           # DB가 켜져 있어야 함 (Ollama는 필요 없음)
+uv run pytest                  # 전체 (약 2초)
+uv run pytest -q tests/test_auth.py          # 파일 하나만
+uv run pytest -k other_users                 # 이름에 other_users가 들어간 테스트만
+uv run pytest -x                             # 첫 실패에서 멈춤
+```
+
+- 개발 DB(`chatbot`)와 따로 **`chatbot_test` DB**를 쓰고, 시작할 때 `alembic upgrade head`로 테이블을 만듭니다. 테스트마다 테이블을 비웁니다.
+- LLM은 `monkeypatch`로 가짜 함수로 바꿔서, Ollama 없이도 빠르고 항상 같은 결과로 돕니다.
+
+| 파일 | 내용 |
+| --- | --- |
+| `tests/conftest.py` | 테스트 DB 준비, `client` fixture |
+| `tests/helpers.py` | `signup()`, `login_as()` (여러 사용자 오가기) |
+| `tests/test_auth.py` | 가입 · 로그인 · 로그아웃, 쿠키 옵션, 위조 · 만료 토큰 |
+| `tests/test_conversations.py` | 대화 CRUD, upsert, 가지, **다른 사용자 격리**, 제목 요약 · 실패 시 대체 |
+| `tests/test_chat.py` | 채팅 스트림, 모델 · 역할 검증, 긴 대화 자르기, LLM 오류 → 503/502, 모델 · 역할 목록 |
+| `tests/test_units.py` | `trim_history`, 제목 정리 함수 단위 테스트 |
 
 ## 7. 문제 해결
 
