@@ -14,7 +14,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import settings
 from app.db import engine
-from app.routers import auth, chat, conversations
+from app.llm import LlmError, LlmModelMissingError, LlmUnavailableError
+from app.routers import auth, chat, conversations, models
 
 
 # lifespan: 서버가 켜질 때(yield 앞)와 꺼질 때(yield 뒤) 한 번씩 실행할 코드.
@@ -43,6 +44,7 @@ app.include_router(chat.router, prefix="/api")
 # routers/auth.py가 prefix="/auth"를 갖고 있어서 최종 주소는 /api/auth/...
 app.include_router(auth.router, prefix="/api")
 app.include_router(conversations.router, prefix="/api")
+app.include_router(models.router, prefix="/api")
 
 
 # HTTPException을 던지면 FastAPI 기본은 {"detail": "..."} 로 응답한다.
@@ -86,3 +88,41 @@ async def validation_exception_handler(
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# ── LLM 오류 → HTTP 응답 ───────────────────────────────
+# 채팅 · 모델 목록 등 LLM을 부르는 곳은 예외를 그냥 올려보내고, 응답 모양은 여기 한곳에서 정한다.
+# 같은 오류가 어느 엔드포인트에서 나든 같은 상태 코드 · 메시지가 나간다.
+
+
+@app.exception_handler(LlmUnavailableError)
+async def llm_unavailable_handler(
+    request: Request, exc: LlmUnavailableError
+) -> JSONResponse:
+    # 503 Service Unavailable: 우리 서버는 멀쩡한데 의존하는 서비스가 꺼져 있음
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": f"LLM 서버({settings.llm_base_url})에 연결할 수 없습니다. "
+            "Ollama가 실행 중인지 확인하세요 (brew services run ollama)."
+        },
+    )
+
+
+@app.exception_handler(LlmModelMissingError)
+async def llm_model_missing_handler(
+    request: Request, exc: LlmModelMissingError
+) -> JSONResponse:
+    # 502 Bad Gateway: 뒤쪽 서버(Ollama)가 오류 응답을 줌
+    return JSONResponse(
+        status_code=502,
+        content={
+            "error": f'모델 "{exc.model}"을 찾을 수 없습니다. '
+            f"ollama pull {exc.model} 으로 받아주세요."
+        },
+    )
+
+
+@app.exception_handler(LlmError)
+async def llm_error_handler(request: Request, exc: LlmError) -> JSONResponse:
+    return JSONResponse(status_code=502, content={"error": exc.detail})

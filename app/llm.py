@@ -31,7 +31,11 @@ class LlmUnavailableError(Exception):
 
 
 class LlmModelMissingError(Exception):
-    """요청한 모델이 없을 때 (404)."""
+    """요청한 모델이 없을 때 (404). 어떤 모델이 없었는지 메시지에 쓰려고 이름을 들고 다닌다."""
+
+    def __init__(self, model: str) -> None:
+        super().__init__(model)
+        self.model = model
 
 
 class LlmError(Exception):
@@ -43,7 +47,60 @@ class LlmError(Exception):
         self.detail = detail
 
 
-async def stream_chat(messages: list[ChatMessage]) -> AsyncIterator[str]:
+def _auth_headers() -> dict[str, str]:
+    # Ollama는 키가 필요 없다. 키가 있는 OpenAI 호환 서비스로 바꿀 때만 붙인다.
+    if settings.llm_api_key:
+        return {"Authorization": f"Bearer {settings.llm_api_key}"}
+    return {}
+
+
+def _raise_for_status(status: int, detail: str, model: str) -> None:
+    if status == 404:
+        raise LlmModelMissingError(model)
+    raise LlmError(status, detail)
+
+
+async def list_installed_models() -> set[str]:
+    """LLM 서버가 지금 실제로 돌릴 수 있는 모델 이름들 (GET /v1/models).
+
+    Ollama에선 `ollama list`에 보이는 모델들이다. 허용 목록에 있어도 설치 안 된 모델이 있을 수 있어서 확인한다.
+    """
+    # 스트리밍이 아닌 짧은 요청이라 async with로 열고 닫는다 (stream_chat과 비교해 보기)
+    async with httpx.AsyncClient(
+        base_url=settings.llm_base_url, headers=_auth_headers(), timeout=10
+    ) as client:
+        try:
+            response = await client.get("/models")
+        except httpx.ConnectError as exc:
+            raise LlmUnavailableError from exc
+    if response.status_code != 200:
+        _raise_for_status(response.status_code, await _read_error(response), "")
+    # OpenAI 형식: {"data": [{"id": "gemma3:4b", ...}, ...]}
+    return {model["id"] for model in response.json().get("data", [])}
+
+
+async def complete_chat(messages: list[dict[str, str]], model: str) -> str:
+    """스트리밍 없이 답변 전체를 한 번에 받는다. 짧은 내부용 요청(제목 요약 등)에 쓴다.
+
+    "stream": False 면 SSE 대신 JSON 하나가 온다:
+        {"choices": [{"message": {"role": "assistant", "content": "답변 전체"}}]}
+    사용자가 화면에서 기다리는 답변이 아니라서 조각조각 보여줄 필요가 없다.
+    """
+    payload = {"model": model, "stream": False, "messages": messages}
+    # 무한정 기다리지 않도록 시간 제한을 둔다 (제목 하나에 60초 넘게 걸리면 포기)
+    async with httpx.AsyncClient(
+        base_url=settings.llm_base_url, headers=_auth_headers(), timeout=60
+    ) as client:
+        try:
+            response = await client.post("/chat/completions", json=payload)
+        except httpx.ConnectError as exc:
+            raise LlmUnavailableError from exc
+    if response.status_code != 200:
+        _raise_for_status(response.status_code, await _read_error(response), model)
+    return response.json()["choices"][0]["message"]["content"] or ""
+
+
+async def stream_chat(messages: list[ChatMessage], model: str) -> AsyncIterator[str]:
     """LLM에 요청을 보내고, 텍스트 조각을 내보내는 비동기 이터레이터를 돌려준다.
 
     두 단계로 나눈 이유: 이 함수 자체는 연결과 상태 코드 확인까지만 하고 바로 반환한다.
@@ -51,7 +108,7 @@ async def stream_chat(messages: list[ChatMessage]) -> AsyncIterator[str]:
     실제 본문 읽기는 반환된 _text_chunks()가 StreamingResponse 안에서 나중에 한다.
     """
     payload = {
-        "model": settings.llm_model,
+        "model": model,
         "stream": True,  # 답변을 다 만든 뒤가 아니라 토큰이 생길 때마다 보내 달라는 뜻
         "messages": [
             # LLM은 대화를 기억하지 않는다. 매 요청마다 시스템 프롬프트 + 지금까지의 대화 전체를 보낸다.
@@ -60,10 +117,7 @@ async def stream_chat(messages: list[ChatMessage]) -> AsyncIterator[str]:
         ],
     }
 
-    headers = {"Accept": "text/event-stream"}
-    # Ollama는 키가 필요 없다. 키가 있는 OpenAI 호환 서비스로 바꿀 때만 쓴다.
-    if settings.llm_api_key:
-        headers["Authorization"] = f"Bearer {settings.llm_api_key}"
+    headers = {"Accept": "text/event-stream", **_auth_headers()}
 
     # `async with` 를 쓰지 않는 이유: 함수가 반환된 뒤에도 스트림을 계속 읽어야 해서
     # 클라이언트를 여기서 닫으면 안 된다. 대신 오류 경로와 _text_chunks()의 finally에서 직접 닫는다.
@@ -87,9 +141,7 @@ async def stream_chat(messages: list[ChatMessage]) -> AsyncIterator[str]:
         detail = await _read_error(response)
         await response.aclose()
         await client.aclose()
-        if response.status_code == 404:
-            raise LlmModelMissingError
-        raise LlmError(response.status_code, detail)
+        _raise_for_status(response.status_code, detail, model)
 
     # async def 안에서 비동기 제너레이터를 "호출만" 하면 아직 실행되지 않고 이터레이터 객체만 생긴다.
     # 실제 실행은 StreamingResponse가 `async for`로 꺼내 읽기 시작할 때 일어난다.

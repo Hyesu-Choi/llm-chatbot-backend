@@ -5,7 +5,8 @@
     2. 대화 클릭      GET    /conversations/{id}/messages       그 대화의 메시지 불러오기
     3. 새 대화 첫 질문 POST   /conversations                    대화방 만들기 → id 받기
     4. 질문 · 답변마다 PUT    /conversations/{id}/messages/{mid} 메시지 저장 (같은 mid면 덮어쓰기)
-    5. 첫 답변 후      PATCH  /conversations/{id}  {"title"}    제목 붙이기
+    5. 첫 답변 후      POST   /conversations/{id}/title        LLM이 첫 질문을 요약해 제목 붙이기
+       (이름 바꾸기)   PATCH  /conversations/{id}  {"title"}    사용자가 직접 제목 수정
     6. 보관 · 삭제     PATCH  {"archived"} / DELETE
 
 AI 답변 생성 자체(/api/chat)는 여기와 따로다. 프론트가 답변을 다 받은 뒤 4번으로 저장한다.
@@ -14,22 +15,37 @@ AI 답변 생성 자체(/api/chat)는 여기와 따로다. 프론트가 답변�
 import uuid
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser
+from app.config import settings
 from app.db import get_db
-from app.models import Conversation, Message, User
+from app.llm import LlmError, LlmModelMissingError, LlmUnavailableError, complete_chat
+from app.models import CONVERSATION_TITLE_MAX_LENGTH, Conversation, Message, User
 from app.schemas import (
     ConversationResponse,
     ConversationUpdate,
     MessageResponse,
     MessageUpsert,
+    TitleRequest,
 )
 
 router = APIRouter(prefix="/conversations")
+
+# LLM이 실패했을 때 쓰는 제목 길이 (첫 질문 앞부분)
+FALLBACK_TITLE_LENGTH = 30
+# 제목 요약용 지시문. 작은 모델은 "제목:" 같은 군더더기를 붙이기 쉬워서 출력 형식을 구체적으로 못 박는다.
+# 예시(few-shot)를 하나 주면 작은 모델도 "질문의 핵심 단어를 살린다"는 의도를 훨씬 잘 따른다.
+TITLE_PROMPT = (
+    "사용자의 첫 질문을 보고 대화 목록에 표시할 짧은 제목을 지어 주세요. "
+    "질문이 무엇을 원하는지 핵심 단어를 그대로 살려 한국어 15자 이내 명사형으로 쓰고, "
+    "따옴표 · 마침표 · 이모지 · '제목:' 같은 머리말 없이 제목 한 줄만 출력하세요.\n"
+    "예) 질문: 회사 동료 부탁을 정중하게 거절하는 말 알려줘 → 동료 부탁 정중히 거절하기"
+)
 
 Db = Annotated[AsyncSession, Depends(get_db)]
 
@@ -172,3 +188,50 @@ async def upsert_message(
     # 두 문장(메시지 저장 + 시각 갱신)을 한 트랜잭션으로 함께 반영한다. 하나만 반영되는 일은 없다.
     await db.commit()
     return message
+
+
+def _clean_title(raw: str) -> str:
+    """LLM 출력에서 제목 한 줄만 남긴다. 작은 모델은 지시를 어기고 따옴표나 여러 줄을 붙이곤 한다."""
+    first_line = raw.strip().splitlines()[0] if raw.strip() else ""
+    title = first_line.removeprefix("제목:").strip().strip("\"'“”‘’「」`*#.")
+    return title[:CONVERSATION_TITLE_MAX_LENGTH].strip()
+
+
+def _fallback_title(question: str) -> str:
+    # 공백 · 줄바꿈을 한 칸으로 정리하고 앞부분만 자른다
+    text = " ".join(question.split())
+    if len(text) <= FALLBACK_TITLE_LENGTH:
+        return text
+    return text[:FALLBACK_TITLE_LENGTH] + "…"
+
+
+@router.post("/{conversation_id}/title", response_model=ConversationResponse)
+async def generate_title(
+    conversation_id: uuid.UUID, body: TitleRequest, user: CurrentUser, db: Db
+) -> Conversation:
+    conversation = await _get_own_conversation(db, user, conversation_id)
+
+    try:
+        # 사용자가 고른 모델이 아니라 서버 기본 모델로 요약한다 (작고 빠른 모델이면 충분한 일)
+        raw = await complete_chat(
+            [
+                {"role": "system", "content": TITLE_PROMPT},
+                {"role": "user", "content": body.question},
+            ],
+            settings.llm_model,
+        )
+        title = _clean_title(raw)
+    except (
+        LlmUnavailableError,
+        LlmModelMissingError,
+        LlmError,
+        httpx.TimeoutException,
+    ):
+        # 제목은 있으면 좋은 부가 기능이라, LLM이 실패해도 오류를 내지 않고 질문 앞부분으로 대신한다.
+        # (채팅 답변은 이미 성공했는데 제목 때문에 오류 화면을 띄우면 이상하다)
+        title = ""
+
+    conversation.title = title or _fallback_title(body.question)
+    await db.commit()
+    await db.refresh(conversation)
+    return conversation

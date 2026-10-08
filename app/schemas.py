@@ -28,6 +28,19 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     # min_length=1: 빈 배열 [] 이면 422. 대화 기록 전체를 매번 보낸다 (서버는 대화를 저장하지 않음).
     messages: list[ChatMessage] = Field(min_length=1)
+    # 안 보내면 서버 기본 모델(settings.llm_model). 보내면 허용 목록에 있어야 한다 (routers/chat.py).
+    model: str | None = None
+
+
+class ModelOption(BaseModel):
+    id: str
+    # 허용 목록에는 있지만 Ollama에 아직 안 받은(ollama pull 안 한) 모델이면 False
+    installed: bool
+
+
+class ModelsResponse(BaseModel):
+    default: str
+    models: list[ModelOption]
 
 
 # ── 인증 ──────────────────────────────────────────────
@@ -108,3 +121,9 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     created_at: datetime
+
+
+class TitleRequest(BaseModel):
+    """제목 요약에 쓸 첫 질문. 너무 긴 질문은 앞부분만 받아도 제목을 짓기에 충분하다."""
+
+    question: str = Field(min_length=1, max_length=2000)

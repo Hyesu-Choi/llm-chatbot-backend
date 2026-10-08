@@ -90,7 +90,8 @@ cp .env.example .env
 | 변수 | 기본값 | 설명 |
 | --- | --- | --- |
 | `LLM_BASE_URL` | `http://localhost:11434/v1` | OpenAI 호환 엔드포인트 |
-| `LLM_MODEL` | `gemma3:4b` | 사용할 모델 (`ollama list`의 NAME) |
+| `LLM_MODEL` | `gemma3:4b` | 기본 모델 (`ollama list`의 NAME). 제목 요약에도 사용 |
+| `LLM_MODELS` | `["exaone3.5:7.8b"]` | 화면에서 고를 수 있는 모델 (기본 모델 자동 포함). 목록에 없는 모델은 400 |
 | `LLM_API_KEY` | (없음) | Ollama는 필요 없음. 키가 있는 서비스로 바꿀 때만 |
 | `CORS_ORIGINS` | `["http://localhost:5173"]` | JSON 배열. 프론트 주소 |
 | `DATABASE_URL` | `postgresql+asyncpg://chatbot:chatbot@localhost:5432/chatbot` | DB 접속 주소. `+asyncpg`는 비동기 드라이버 |
@@ -111,8 +112,10 @@ echo "JWT_SECRET=$(openssl rand -hex 32)" >> .env
 
 ```bash
 ollama pull <모델>      # 받고
-# .env의 LLM_MODEL=<모델> 로 바꾼 뒤 서버 재시작
+# .env의 LLM_MODELS 배열에 추가(드롭다운에서 고르기) 또는 LLM_MODEL로 지정(기본 모델) → 서버 재시작
 ```
+
+허용 목록에 있어도 `ollama pull`을 안 했으면 드롭다운에 "(설치 필요)"로 흐리게 보이고 고를 수 없습니다.
 
 | 모델 | 크기 | 특징 |
 | --- | --- | --- |
@@ -188,15 +191,24 @@ Swagger UI(`/docs`)에서 시도해도 브라우저가 쿠키를 저장해서 `/
 | `DELETE /api/conversations/{id}` | - | 204 (메시지도 함께 삭제) |
 | `GET /api/conversations/{id}/messages` | - | 200 메시지 목록 (오래된 순) |
 | `PUT /api/conversations/{id}/messages/{message_id}` | `{"parent_message_id", "role", "content"}` | 200 메시지 (없으면 생성, 있으면 내용 수정) |
+| `POST /api/conversations/{id}/title` | `{"question": "첫 질문"}` | 200 대화 (LLM이 15자 이내 제목으로 요약해 저장. 실패하면 질문 앞 30자) |
 
 - 대화: `{"id": "uuid", "title": "...", "archived": false, "created_at", "updated_at"}`
 - 메시지: `{"message_id", "parent_message_id", "role": "user" | "assistant", "content", "created_at"}`
 - `message_id`는 프론트(assistant-ui)가 붙인 id입니다. 같은 id로 다시 PUT하면 새로 쌓이지 않고 덮어씁니다.
 - AI 답변 생성(`/api/chat`)은 저장과 별개입니다. 프론트가 답변을 다 받은 뒤 PUT으로 저장합니다.
 
+### `GET /api/models`
+
+**로그인 필요.** 드롭다운에 보여줄 모델 목록. 허용 목록(`LLM_MODEL` + `LLM_MODELS`)마다 Ollama 설치 여부를 붙여 줍니다.
+
+```json
+{"default": "gemma3:4b", "models": [{"id": "gemma3:4b", "installed": true}, {"id": "exaone3.5:7.8b", "installed": false}]}
+```
+
 ### `POST /api/chat`
 
-**로그인 필요** (쿠키 없으면 401). 요청 본문. `messages`는 1개 이상, role은 `user` 또는 `assistant`만 받습니다.
+**로그인 필요** (쿠키 없으면 401). 본문의 `model`은 선택이고, 없으면 `LLM_MODEL`을 씁니다. 허용 목록에 없는 모델이면 400. `messages`는 1개 이상, role은 `user` 또는 `assistant`만 받습니다.
 시스템 프롬프트는 서버에서 붙이므로 보내지 않습니다.
 
 ```json
@@ -205,7 +217,8 @@ Swagger UI(`/docs`)에서 시도해도 브라우저가 쿠키를 저장해서 `/
     {"role": "user", "content": "안녕"},
     {"role": "assistant", "content": "안녕하세요!"},
     {"role": "user", "content": "오늘 뭐 하지?"}
-  ]
+  ],
+  "model": "gemma3:4b"
 }
 ```
 
@@ -223,6 +236,7 @@ curl -N -b cookies.txt localhost:8000/api/chat \
 | --- | --- | --- |
 | 요청 형식 오류 (빈 messages, 짧은 비밀번호 등) | 422 | `{"error": "비밀번호는 8자 이상 128자 이하로 입력해 주세요."}` 등 |
 | 로그인 필요 · 로그인 실패 | 401 | `{"error": "로그인이 필요합니다."}` 등 |
+| 허용 안 된 모델 | 400 | `{"error": "선택할 수 없는 모델입니다: \"...\""}` |
 | 이미 가입된 이메일 | 409 | `{"error": "이미 가입된 이메일입니다."}` |
 | 없는 대화 · 남의 대화 | 404 | `{"error": "대화를 찾을 수 없습니다."}` |
 | Ollama 연결 실패 | 503 | `{"error": "LLM 서버(...)에 연결할 수 없습니다. ..."}` |
@@ -237,16 +251,17 @@ curl -N -b cookies.txt localhost:8000/api/chat \
 
 ```
 app/
-  main.py          FastAPI 앱, CORS, 라우터 등록, /health, 종료 시 DB 연결 정리
+  main.py          FastAPI 앱, CORS, 라우터 등록, /health, 종료 시 DB 연결 정리, 오류 → {"error"} 처리기
   config.py        .env 설정 (pydantic-settings)
   db.py            DB 엔진 · 세션 · Base, 요청별 세션 의존성 get_db
   models.py        DB 테이블 (SQLAlchemy ORM): User, Conversation, Message
   schemas.py       API 요청 · 응답 모양 (pydantic): 채팅, 인증, 대화 · 메시지
   auth.py          비밀번호 해시(argon2), JWT 발급 · 검증, 쿠키, 로그인 확인 의존성 CurrentUser
-  llm.py           OpenAI 호환 SSE 스트림 → 텍스트 조각 (httpx)
+  llm.py           OpenAI 호환 API: 스트리밍 채팅, 한 번에 받기(제목 요약), 설치된 모델 목록 (httpx)
   routers/auth.py  /api/auth/signup · login · logout · me
   routers/chat.py  POST /api/chat, LLM 예외 → 503/502 JSON
-  routers/conversations.py  대화 목록 CRUD, 메시지 불러오기 · 저장(upsert)
+  routers/conversations.py  대화 목록 CRUD, 메시지 불러오기 · 저장(upsert), LLM 제목 요약
+  routers/models.py  GET /api/models (허용 목록 + 설치 여부)
 migrations/        Alembic 마이그레이션 (env.py 설정, versions/ 변경 이력)
 docker-compose.yml 로컬 PostgreSQL
 ```

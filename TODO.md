@@ -48,15 +48,13 @@ AWS 요금과 프리 티어 조건은 계정 생성 시기에 따라 다르고 �
   - 백엔드: `conversations`, `messages` 테이블 + 대화 목록 · 조회 · 삭제 API. `/api/chat`이 답변을 다 받은 뒤 DB에 저장
   - 프론트: assistant-ui 대화 목록을 백엔드 API에 연결
   - 공부: 1:N 관계(사용자 → 대화 → 메시지), 다른 사람 대화에 접근 못 하게 막기
-- [ ] **모델 선택 드롭다운**
+- [x] **모델 선택 드롭다운**
   - 문제: 지금은 `.env`의 `LLM_MODEL`을 바꾸고 서버를 재시작해야 함
   - 백엔드: `GET /api/models` 추가 (`/v1/models` 전달), `POST /api/chat` 본문에 `model` 필드 추가 (허용 목록에 있는 모델만)
   - 프론트: 헤더나 입력창 옆에 드롭다운
   - 공부: 새 API 추가 흐름(스키마 → 라우터 → 프론트 호출), gemma3 / exaone 비교
-- [ ] **대화 제목 자동 생성**
-  - 지금: 첫 질문 앞 30자를 제목으로 씀 (프론트 `conversationListAdapter.ts`의 `generateTitle`)
-  - 할 일: 첫 질문을 LLM에 "10자 이내 제목으로 요약해줘"라고 한 번 더 보내서 `conversations.title`에 저장 (스트리밍 없이)
-    - 백엔드에 `POST /api/conversations/{id}/title` 같은 엔드포인트를 만들고, 프론트 `generateTitle`이 그걸 부르도록 교체
+- [x] **대화 제목 자동 생성**
+  - `POST /api/conversations/{id}/title`: 기본 모델이 15자 이내로 요약 (스트리밍 없이), 실패하면 첫 질문 앞 30자
   - 공부: 프롬프트 활용, 스트리밍 / 비스트리밍 요청 차이
 
 ## 2순위: 챗봇다운 기능
