@@ -397,6 +397,9 @@ app/
 migrations/        Alembic 마이그레이션 (env.py 설정, versions/ 변경 이력)
 tests/             pytest (아래 "테스트" 참고)
 docker-compose.yml 로컬 PostgreSQL
+Dockerfile         백엔드 운영 이미지
+deploy/            운영 서버(EC2) 구성: docker-compose.yml(nginx · backend · ollama), nginx.conf, .env.example
+docs/deploy.md     배포 가이드 (AWS, 단계별 기록)
 ```
 
 Ollama의 OpenAI 호환 API(`/v1`)를 쓰므로, Ollama 전용 코드는 없습니다.

@@ -7,18 +7,18 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "alembic>=1.20.0",
-    "asyncpg>=0.32.0",
-    "email-validator>=2.3.0",
-    "fastapi>=0.142.2",
-    "httpx>=0.28.1",
-    "pgvector>=0.5.0",
-    "pwdlib[argon2]>=0.3.1",
-    "pydantic-settings>=2.15.0",
-    "pyjwt>=2.15.1",
-    "python-multipart>=0.0.32",
-    "sqlalchemy[asyncio]>=2.1.4",
-    "uvicorn[standard]>=0.54.0",
+    "alembic>=1.20.0",  #데이터베이스 마이그레이션을 관리
+    "asyncpg>=0.32.0", #비동기적으로 PostgreSQL 데이터베이스에 접속하고 쿼리를 실행
+    "email-validator>=2.3.0", #이메일 주소의 유효성을 검사
+    "fastapi>=0.142.2",  #비동기 웹 프레임워크로, API를 쉽게 구축할 수 있도록 도와줌.
+    "httpx>=0.28.1", #비동기 HTTP 클라이언트 및 서버 라이브러리
+    "pgvector>=0.5.0",  #PostgreSQL 데이터베이스에서 벡터 검색을 지원
+    "pwdlib[argon2]>=0.3.1",  #강력한 비밀번호 해싱을 위한 라이브러리입니다. Argon2 해싱 알고리즘을 사용
+    "pydantic-settings>=2.15.0",  #Pydantic을 사용하여 설정 파일을 관리
+    "pyjwt>=2.15.1",  #JWT (JSON Web Token)를 생성, 검증
+    "python-multipart>=0.0.32",  #multipart/form-data 요청을 처리
+    "sqlalchemy[asyncio]>=2.1.4",  #객체 관계 매핑 (ORM) 라이브러리
+    "uvicorn[standard]>=0.54.0",  #ASGI (Asynchronous Server Gateway Interface) 애플리케이션을 실행하기 위한 ASGI 서버
 ]
 
 [dependency-groups]

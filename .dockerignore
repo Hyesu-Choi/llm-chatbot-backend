@@ -1,0 +1,16 @@
+# docker build 때 이미지로 보내지 않을 파일들.
+# 특히 .env(비밀값)와 .venv(맥용 패키지, 리눅스 컨테이너에선 못 씀)는 절대 들어가면 안 된다.
+.env
+.venv/
+.git/
+.github/
+.idea/
+.pytest_cache/
+.ruff_cache/
+.vite/
+__pycache__/
+*.pyc
+tests/
+deploy/
+cookies.txt
+*.md

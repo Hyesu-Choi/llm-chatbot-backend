@@ -12,10 +12,10 @@
 | 로그인 | 이메일 + 비밀번호, argon2 해시(`pwdlib`), JWT를 httpOnly 쿠키에 (`PyJWT`) | 인증 원리를 직접 짜 보며 배우기 좋음. 구글 로그인은 나중에 추가 |
 | 로컬 개발 | Docker Compose로 Postgres만 띄우기, Ollama는 맥에서 직접 실행 | 맥의 Docker는 GPU(Metal)를 못 써서 Ollama를 컨테이너에 넣으면 아주 느림 |
 | 배포: 프론트 | AWS S3 + CloudFront | 정적 파일은 S3에, CloudFront가 HTTPS · 캐시 · `/api` 라우팅 담당 |
-| 배포: 백엔드 | AWS EC2 1대 + Docker Compose (nginx + FastAPI) | 서버 · 네트워크 · 보안 그룹을 직접 만지며 AWS 기본기를 배우기 좋음 |
+| 배포: 백엔드 | AWS EC2 1대 + Docker Compose (nginx + FastAPI + Ollama) | 서버 · 네트워크 · 보안 그룹을 직접 만지며 AWS 기본기를 배우기 좋음 |
 | 배포: DB | AWS RDS PostgreSQL | 관리형 DB. 백업 · 패치를 AWS가 해 줌. 비공개 서브넷에 둬서 외부 접근 차단 |
 | 배포: 이미지 · 비밀값 | ECR(Docker 이미지 저장소), SSM Parameter Store(비밀값) | 키를 코드나 이미지에 넣지 않기 |
-| 배포: LLM | OpenAI 호환 API 서비스 (`LLM_*` 환경 변수만 교체). Amazon Bedrock도 후보 | EC2 GPU 서버에서 Ollama를 돌리면 한 달 수십만 원이라 비현실적 |
+| 배포: LLM | EC2 안의 Ollama 컨테이너 (CPU, gemma3:4b + bge-m3). 유료 API는 쓰지 않음 | 공부용으로 잠깐 켜 두고 지울 거라 메모리 8GB 서버(`t4g.large`) 비용만 듦. GPU 서버는 한 달 수십만 원이라 제외 |
 | CI/CD | GitHub Actions → (OIDC로 AWS 로그인) → ECR · S3 배포 | AWS 키를 GitHub에 저장하지 않는 안전한 방식 |
 
 AWS 요금과 프리 티어 조건은 계정 생성 시기에 따라 다르고 자주 바뀌니, 리소스를 만들기 전에 꼭 확인할 것.
@@ -84,15 +84,15 @@ AWS 요금과 프리 티어 조건은 계정 생성 시기에 따라 다르고 �
 
 ## 배포 (AWS)
 
-로컬에서 0~1순위가 동작한 뒤에 진행.
+로컬에서 0~1순위가 동작한 뒤에 진행. 단계별 설명과 명령은 [`docs/deploy.md`](docs/deploy.md).
 
 ```
 브라우저 ──▶ CloudFront ─┬─ /*      ──▶ S3 (프론트 빌드 결과)
-                         └─ /api/* ──▶ EC2 [nginx ──▶ FastAPI 컨테이너] ──▶ RDS PostgreSQL (비공개 서브넷)
-                                                                  └──▶ LLM API
+                         └─ /api/* ──▶ EC2 [nginx ──▶ FastAPI ──▶ Ollama] ──▶ RDS PostgreSQL (비공개 서브넷)
 ```
 
 CloudFront가 `/api/*`를 백엔드로 넘겨서 브라우저 입장에선 같은 출처 → 쿠키 · CORS가 개발 때처럼 문제없음.
+공부용으로 며칠 켜 보고 **전부 삭제**하는 걸 전제로 함. 포폴용 상시 운영은 그 뒤에 무료 호스팅으로 따로.
 
 ### 1. 계정 준비 (제일 먼저, 요금 사고 방지)
 
@@ -124,21 +124,22 @@ CloudFront가 `/api/*`를 백엔드로 넘겨서 브라우저 입장에선 같�
 
 ### 5. 백엔드: EC2 + Docker
 
-- [ ] 백엔드 Dockerfile 작성 (uv로 설치, `uvicorn` `--host 0.0.0.0`, `--reload` 없이)
-- [ ] ECR 리포지토리 만들고 이미지 푸시 (EC2가 ARM `t4g`면 `--platform linux/arm64`로 빌드)
-- [ ] EC2 작은 인스턴스(`t4g.micro` 정도) + IAM 역할(ECR 읽기, SSM 파라미터 읽기)
-- [ ] EC2에서 Docker Compose로 nginx + FastAPI 실행
-  - nginx에 `proxy_buffering off;` 필수. 안 하면 스트리밍 답변이 한 번에 몰아서 나옴
-- [ ] 환경 변수: `DATABASE_URL`, `JWT_SECRET`(길고 무작위), `LLM_*` → 전부 Parameter Store에서 읽기
-- [ ] 쿠키 `Secure` 켜기, `/docs` 숨길지 결정
+- [x] 백엔드 `Dockerfile` (uv로 설치, root 아닌 사용자, `--reload` 없이). arm64로 빌드 확인
+- [x] 운영용 `deploy/docker-compose.yml`: nginx + backend + migrate(1회) + ollama + ollama-pull(1회)
+  - nginx(`deploy/nginx.conf`)에 `proxy_buffering off;` → 맥에서 스트리밍 글자 단위로 나오는 것 확인
+  - `/docs`는 nginx가 `/api/`·`/health`만 넘겨서 밖에서 안 보임
+- [ ] ECR 리포지토리 만들고 이미지 푸시 (`--platform linux/arm64`)
+- [ ] EC2 `t4g.large`(메모리 8GB, Ollama 모델 약 5GB) + 디스크 30GB + IAM 역할(ECR 읽기, SSM 파라미터 읽기)
+- [ ] 환경 변수(`deploy/.env.example` 참고): `DATABASE_URL`(`?ssl=require`), `JWT_SECRET` → Parameter Store에서 읽어 `deploy/.env` 만들기
 - [ ] CloudFront에 `/api/*` 동작 추가 → EC2로 전달 (캐시 끄기, 쿠키 · 헤더 전달)
+  - CPU라 첫 글자까지 수 초 걸림 → 오리진 응답 제한 시간(기본 30초)을 60초로 늘리기
 - 공부: IAM 역할로 키 없이 권한 주기, 컨테이너 배포, 리버스 프록시
 
 ### 6. 운영 LLM
 
-- [ ] 1안 (추천): OpenAI 호환 유료 API. `LLM_*` 세 개만 Parameter Store에 넣으면 끝. 오늘 쓴 한국어 질문 5개로 모델 고르기
-- [ ] 2안: Amazon Bedrock. AWS 안에서 해결되고 IAM 역할로 인증 가능. OpenAI 호환 방식 지원 범위는 확인 필요 (안 되면 `app/llm.py`에 Bedrock 호출 추가)
-- [ ] **사용자별 요청 제한**: 유료 API 비용 보호용 분당 · 일당 횟수 제한
+- [x] 유료 API 없이 EC2 안의 Ollama 컨테이너로 결정. 모델은 `ollama-pull`이 자동으로 받음 (작은 모델로 동작 확인)
+- [ ] EC2에서 CPU 답변 속도 측정 (맥 GPU와 비교)
+- [ ] **사용자별 요청 제한**: CPU 하나를 모두가 나눠 쓰니 한 사람이 몰아서 보내면 다른 사람이 오래 기다림
 
 ### 7. CI/CD: GitHub Actions
 
@@ -152,7 +153,7 @@ CloudFront가 `/api/*`를 백엔드로 넘겨서 브라우저 입장에선 같�
 - [ ] CloudWatch Logs로 컨테이너 로그 보기, `/health` 상태 확인 알람
 - [ ] RDS 백업에서 복구 한 번 연습해 보기
 - [ ] (선택) Route 53 도메인 + ACM 인증서 (CloudFront용 인증서는 `us-east-1`에서 발급)
-- [ ] 공부 끝나고 안 쓸 땐 EC2 · RDS 중지 또는 삭제 (켜 둔 시간만큼 요금)
+- [ ] **공부 끝나면 전부 삭제**: EC2 · EBS · RDS(+스냅샷) · ECR · S3 · CloudFront · Parameter Store · 탄력적 IP. 마지막에 Billing에서 남은 요금 확인
 
 ### 나중에 (심화)
 
